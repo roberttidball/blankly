@@ -101,6 +101,14 @@ if __name__ == "__main__":
 
 ```
 
+Daily FX spot data from FXMacroData can be used anywhere Blankly accepts a
+custom `PriceReader`:
+
+```python
+reader = blankly.data.FXMacroDataPriceReader('EUR/USD', '2024-01-01', '2024-03-01')
+exchange = blankly.KeylessExchange(price_reader=reader, initial_account_values={'USD': 10000})
+```
+
 **Check out alternative data examples [here](https://docs.blankly.finance/examples/model-framework)**
 
 #### Accurate Backtest Holdings
