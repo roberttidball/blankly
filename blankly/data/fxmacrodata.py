@@ -24,7 +24,7 @@ import requests
 
 from blankly.data.data_reader import DataReader, DataTypes, PriceReader
 
-DEFAULT_BASE_URL = "https://fxmacrodata.com/api/v1"
+DEFAULT_BASE_URL = "https://api.fxmacrodata.com/v1"
 API_KEY_ENV_VARS = ("FXMACRODATA_API_KEY", "FXMD_API_KEY")
 PRICE_COLUMNS = ["time", "open", "high", "low", "close", "volume"]
 
