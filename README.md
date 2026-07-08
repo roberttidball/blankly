@@ -109,6 +109,15 @@ reader = blankly.data.FXMacroDataPriceReader('EUR/USD', '2024-01-01', '2024-03-0
 exchange = blankly.KeylessExchange(price_reader=reader, initial_account_values={'USD': 10000})
 ```
 
+FXMacroData also exposes macroeconomic announcement events, release calendars,
+and forecast groups for event-driven research:
+
+```python
+events = blankly.data.FXMacroDataAnnouncementReader('USD', 'inflation')
+calendar = blankly.data.FXMacroDataCalendarReader('USD', indicator='policy_rate')
+forecasts = blankly.data.FXMacroDataPredictionReader('USD', 'non_farm_payrolls')
+```
+
 **Check out alternative data examples [here](https://docs.blankly.finance/examples/model-framework)**
 
 #### Accurate Backtest Holdings

@@ -147,5 +147,118 @@ class FXMacroDataPriceReaderTest(unittest.TestCase):
         self.assertTrue(pd.api.types.is_integer_dtype(data["time"]))
 
 
+class FXMacroDataMacroReaderTest(unittest.TestCase):
+    def setUp(self):
+        self.fxmacrodata = load_fxmacrodata_module()
+
+    def test_announcement_reader_fetches_macro_events(self):
+        requests = []
+
+        def mock_get(url, params, headers, timeout):
+            requests.append((url, params, headers, timeout))
+            return FXMacroDataResponse(
+                {
+                    "data": [
+                        {
+                            "announcement_id": "usd_inflation_2026-05-31",
+                            "date": "2026-05-31",
+                            "val": 4.2,
+                            "announcement_datetime": 1781094600,
+                        }
+                    ]
+                }
+            )
+
+        with patch.object(self.fxmacrodata.requests, "get", side_effect=mock_get):
+            reader = self.fxmacrodata.FXMacroDataAnnouncementReader(
+                "USD",
+                "inflation",
+                "2026-01-01",
+                "2026-06-30",
+                limit=5,
+                api_key=API_KEY,
+                base_url="https://example.com/api/v1",
+            )
+
+        url, params, headers, timeout = requests[0]
+        self.assertEqual(url, "https://example.com/api/v1/announcements/usd/inflation")
+        self.assertEqual(
+            params,
+            {"start_date": "2026-01-01", "end_date": "2026-06-30", "limit": 5},
+        )
+        self.assertEqual(headers, {"X-API-Key": API_KEY})
+        self.assertEqual(timeout, 30)
+        event_data = reader.data["fxmacrodata_announcements_usd_inflation"]
+        self.assertEqual(event_data["time"].tolist(), [1781094600])
+        self.assertEqual(event_data["data"].iloc[0]["val"], 4.2)
+
+    def test_calendar_reader_preserves_events_with_same_timestamp(self):
+        def mock_get(url, params, headers, timeout):
+            return FXMacroDataResponse(
+                {
+                    "data": [
+                        {
+                            "release": "inflation",
+                            "date": "2026-06-30",
+                            "announcement_datetime": 1784032200,
+                            "forecast": 3.9,
+                        },
+                        {
+                            "release": "retail_sales",
+                            "date": "2026-06-30",
+                            "announcement_datetime": 1784032200,
+                            "forecast": 0.2,
+                        },
+                    ]
+                }
+            )
+
+        with patch.object(self.fxmacrodata.requests, "get", side_effect=mock_get):
+            reader = self.fxmacrodata.FXMacroDataCalendarReader(
+                "USD", api_key=API_KEY, base_url="https://example.com/api/v1"
+            )
+
+        event_data = reader.data["fxmacrodata_calendar_usd"]
+        self.assertEqual(event_data["time"].tolist(), [1784032200, 1784032200])
+        self.assertEqual(
+            [row["release"] for row in event_data["data"].tolist()],
+            ["inflation", "retail_sales"],
+        )
+
+    def test_prediction_reader_fetches_forecast_groups(self):
+        def mock_get(url, params, headers, timeout):
+            return FXMacroDataResponse(
+                {
+                    "data": [
+                        {
+                            "announcement_id": "usd_inflation_2026-07-31",
+                            "date": "2026-07-31",
+                            "announcement_datetime": 1786537800,
+                            "predictions": [
+                                {
+                                    "predicted_value": 3.81,
+                                    "prediction_type": "fxmacrodata",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+
+        with patch.object(self.fxmacrodata.requests, "get", side_effect=mock_get):
+            reader = self.fxmacrodata.FXMacroDataPredictionReader(
+                "USD",
+                "inflation",
+                api_key=API_KEY,
+                base_url="https://example.com/api/v1",
+            )
+
+        event_data = reader.data["fxmacrodata_predictions_usd_inflation"]
+        self.assertEqual(event_data["time"].tolist(), [1786537800])
+        self.assertEqual(
+            event_data["data"].iloc[0]["predictions"][0]["predicted_value"], 3.81
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

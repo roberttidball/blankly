@@ -17,7 +17,13 @@
 """
 
 from blankly.data.data_reader import PriceReader, JsonEventReader, TickReader, DataTypes
-from blankly.data.fxmacrodata import FXMacroDataPriceReader
+from blankly.data.fxmacrodata import (
+    FXMacroDataAnnouncementReader,
+    FXMacroDataCalendarReader,
+    FXMacroDataClient,
+    FXMacroDataPredictionReader,
+    FXMacroDataPriceReader,
+)
 
 """
 Some datatype examples

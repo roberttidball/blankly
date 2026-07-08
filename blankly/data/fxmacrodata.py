@@ -17,17 +17,89 @@
 """
 
 import os
-from typing import Optional
-from typing import Tuple
+from typing import Optional, Tuple
 
 import pandas as pd
 import requests
 
-from blankly.data.data_reader import PriceReader
+from blankly.data.data_reader import DataReader, DataTypes, PriceReader
 
 DEFAULT_BASE_URL = "https://fxmacrodata.com/api/v1"
 API_KEY_ENV_VARS = ("FXMACRODATA_API_KEY", "FXMD_API_KEY")
 PRICE_COLUMNS = ["time", "open", "high", "low", "close", "volume"]
+
+
+class FXMacroDataClient:
+    """Small REST client for FXMacroData's public API."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 30,
+    ):
+        self.api_key = api_key or get_env_api_key()
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    def get(self, path: str, params: Optional[dict] = None):
+        headers = {}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        response = requests.get(
+            f"{self.base_url}/{path.lstrip('/')}",
+            params=clean_params(params or {}),
+            headers=headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def forex(self, base: str, quote: str, start_date=None, end_date=None):
+        return self.get(
+            f"forex/{base.lower()}/{quote.lower()}",
+            {
+                "start_date": format_date(start_date) if start_date else None,
+                "end_date": format_date(end_date) if end_date else None,
+            },
+        )
+
+    def announcements(
+        self, currency: str, indicator: str, start_date=None, end_date=None, limit=None
+    ):
+        return self.get(
+            f"announcements/{currency.lower()}/{indicator.lower()}",
+            {
+                "start_date": format_date(start_date) if start_date else None,
+                "end_date": format_date(end_date) if end_date else None,
+                "limit": limit,
+            },
+        )
+
+    def calendar(self, currency: str, indicator: Optional[str] = None, start_date=None, end_date=None):
+        return self.get(
+            f"calendar/{currency.lower()}",
+            {
+                "indicator": indicator.lower() if indicator else None,
+                "start_date": format_date(start_date) if start_date else None,
+                "end_date": format_date(end_date) if end_date else None,
+            },
+        )
+
+    def predictions(self, currency: str, indicator: str, start_date=None, end_date=None):
+        return self.get(
+            f"predictions/{currency.lower()}/{indicator.lower()}",
+            {
+                "start_date": format_date(start_date) if start_date else None,
+                "end_date": format_date(end_date) if end_date else None,
+            },
+        )
+
+    def data_catalogue(self, currency: str, include_coverage: bool = True):
+        return self.get(
+            f"data_catalogue/{currency.lower()}",
+            {"include_coverage": str(include_coverage).lower()},
+        )
 
 
 class FXMacroDataPriceReader(PriceReader):
@@ -54,31 +126,15 @@ class FXMacroDataPriceReader(PriceReader):
         timeout: float = 30,
     ):
         self.symbol = self.normalize_symbol(symbol)
-        self.api_key = api_key or self.get_env_api_key()
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.client = FXMacroDataClient(api_key=api_key, base_url=base_url, timeout=timeout)
 
         data = self.fetch_prices(start_date, stop_date)
         super().__init__(data, self.symbol)
 
     def fetch_prices(self, start_date, stop_date) -> pd.DataFrame:
         base, quote = self.split_symbol(self.symbol)
-        params = {
-            "start_date": self.format_date(start_date),
-            "end_date": self.format_date(stop_date),
-        }
-        headers = {}
-        if self.api_key:
-            headers["X-API-Key"] = self.api_key
-
-        response = requests.get(
-            f"{self.base_url}/forex/{base}/{quote}",
-            params=params,
-            headers=headers,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        data = self.rows_to_dataframe(self.payload_rows(response.json()))
+        payload = self.client.forex(base, quote, start_date, stop_date)
+        data = self.rows_to_dataframe(payload_rows(payload))
         if data.empty:
             raise ValueError(f"FXMacroData returned no prices for {self.symbol}")
         return data
@@ -93,7 +149,7 @@ class FXMacroDataPriceReader(PriceReader):
                 continue
             records.append(
                 {
-                    "time": cls.to_epoch(date),
+                    "time": to_epoch(date),
                     "open": rate,
                     "high": rate,
                     "low": rate,
@@ -104,15 +160,6 @@ class FXMacroDataPriceReader(PriceReader):
         if not records:
             return pd.DataFrame(columns=PRICE_COLUMNS)
         return pd.DataFrame(records).drop_duplicates("time").sort_values("time")
-
-    @staticmethod
-    def payload_rows(payload) -> list:
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            rows = payload.get("data", [])
-            return rows if isinstance(rows, list) else []
-        return []
 
     @staticmethod
     def extract_rate(row: dict) -> Optional[float]:
@@ -137,23 +184,122 @@ class FXMacroDataPriceReader(PriceReader):
         base, quote = symbol.split("-")
         return base.lower(), quote.lower()
 
-    @staticmethod
-    def get_env_api_key() -> Optional[str]:
-        for name in API_KEY_ENV_VARS:
-            api_key = os.getenv(name)
-            if api_key:
-                return api_key
+
+class FXMacroDataEventReader(DataReader):
+    """Base event reader for FXMacroData macro rows."""
+
+    def __init__(self, event_type: str, rows: list, time_field: str = "announcement_datetime"):
+        super().__init__(DataTypes.event_json)
+        times = []
+        events = []
+        for row in rows:
+            event_time = row_time(row, time_field)
+            if event_time is None:
+                continue
+            times.append(event_time)
+            events.append(row)
+        self._write_dataset({"time": times, "data": events}, event_type, ("time", "data"))
+        self._internal_dataset[event_type] = self._internal_dataset[event_type].sort_values("time")
+
+
+class FXMacroDataAnnouncementReader(FXMacroDataEventReader):
+    """Event reader for realized macroeconomic announcements."""
+
+    def __init__(
+        self,
+        currency: str,
+        indicator: str,
+        start_date=None,
+        stop_date=None,
+        limit: Optional[int] = None,
+        api_key: Optional[str] = None,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 30,
+    ):
+        client = FXMacroDataClient(api_key=api_key, base_url=base_url, timeout=timeout)
+        rows = payload_rows(client.announcements(currency, indicator, start_date, stop_date, limit))
+        event_type = f"fxmacrodata_announcements_{currency.lower()}_{indicator.lower()}"
+        super().__init__(event_type, rows)
+
+
+class FXMacroDataCalendarReader(FXMacroDataEventReader):
+    """Event reader for upcoming official release-calendar rows."""
+
+    def __init__(
+        self,
+        currency: str,
+        indicator: Optional[str] = None,
+        start_date=None,
+        stop_date=None,
+        api_key: Optional[str] = None,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 30,
+    ):
+        client = FXMacroDataClient(api_key=api_key, base_url=base_url, timeout=timeout)
+        rows = payload_rows(client.calendar(currency, indicator, start_date, stop_date))
+        indicator_suffix = f"_{indicator.lower()}" if indicator else ""
+        event_type = f"fxmacrodata_calendar_{currency.lower()}{indicator_suffix}"
+        super().__init__(event_type, rows)
+
+
+class FXMacroDataPredictionReader(FXMacroDataEventReader):
+    """Event reader for FXMacroData forecasts grouped by announcement."""
+
+    def __init__(
+        self,
+        currency: str,
+        indicator: str,
+        start_date=None,
+        stop_date=None,
+        api_key: Optional[str] = None,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 30,
+    ):
+        client = FXMacroDataClient(api_key=api_key, base_url=base_url, timeout=timeout)
+        rows = payload_rows(client.predictions(currency, indicator, start_date, stop_date))
+        event_type = f"fxmacrodata_predictions_{currency.lower()}_{indicator.lower()}"
+        super().__init__(event_type, rows)
+
+
+def clean_params(params: dict) -> dict:
+    return {key: value for key, value in params.items() if value is not None}
+
+
+def payload_rows(payload) -> list:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        rows = payload.get("data", [])
+        return rows if isinstance(rows, list) else []
+    return []
+
+
+def row_time(row: dict, time_field: str = "announcement_datetime") -> Optional[int]:
+    value = row.get(time_field) or row.get("announcement_datetime")
+    if value is not None:
+        return int(value)
+    date = row.get("date") or row.get("timestamp")
+    if date is None:
         return None
+    return to_epoch(date)
 
-    @staticmethod
-    def format_date(value) -> str:
-        return pd.Timestamp(value).strftime("%Y-%m-%d")
 
-    @staticmethod
-    def to_epoch(value) -> int:
-        timestamp = pd.Timestamp(value)
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.tz_localize("UTC")
-        else:
-            timestamp = timestamp.tz_convert("UTC")
-        return int(timestamp.timestamp())
+def get_env_api_key() -> Optional[str]:
+    for name in API_KEY_ENV_VARS:
+        api_key = os.getenv(name)
+        if api_key:
+            return api_key
+    return None
+
+
+def format_date(value) -> str:
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
+
+
+def to_epoch(value) -> int:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+    return int(timestamp.timestamp())
