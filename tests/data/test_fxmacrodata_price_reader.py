@@ -115,7 +115,8 @@ class FXMacroDataPriceReaderTest(unittest.TestCase):
         url, params, headers, timeout = requests[0]
         self.assertEqual(url, "https://example.com/api/v1/forex/eur/usd")
         self.assertEqual(
-            params, {"start_date": "2024-01-02", "end_date": "2024-01-04"}
+            params,
+            {"start_date": "2024-01-02", "end_date": "2024-01-04", "limit": 100, "offset": 0},
         )
         self.assertEqual(headers, {"X-API-Key": API_KEY})
         self.assertEqual(timeout, 30)
@@ -124,6 +125,35 @@ class FXMacroDataPriceReaderTest(unittest.TestCase):
         self.assertEqual(data["close"].tolist(), [1.101, 1.102, 1.103])
         self.assertEqual(data["volume"].tolist(), [0.0, 0.0, 0.0])
         self.assertEqual(reader.prices_info["EUR-USD"]["resolution"], 86400)
+
+    def test_follows_pagination_across_pages(self):
+        requests = []
+        pages = {
+            0: {
+                "data": [
+                    {"date": "2024-01-04", "val": 1.103},
+                    {"date": "2024-01-03", "val": 1.102},
+                ],
+                "pagination": {"has_more": True, "next_offset": 2},
+            },
+            2: {
+                "data": [{"date": "2024-01-02", "val": 1.101}],
+                "pagination": {"has_more": False, "next_offset": None},
+            },
+        }
+
+        def mock_get(url, params, headers, timeout):
+            requests.append(dict(params))
+            return FXMacroDataResponse(pages[params["offset"]])
+
+        with patch.object(self.fxmacrodata.requests, "get", side_effect=mock_get):
+            reader = self.price_reader_class(
+                "EURUSD", "2024-01-02", "2024-01-04", api_key=API_KEY
+            )
+
+        self.assertEqual([params["offset"] for params in requests], [0, 2])
+        self.assertTrue(all(params["limit"] == 100 for params in requests))
+        self.assertEqual(reader.data["EUR-USD"]["close"].tolist(), [1.101, 1.102, 1.103])
 
     def test_symbol_formats(self):
         self.assertEqual(self.price_reader_class.normalize_symbol("EURUSD"), "EUR-USD")
@@ -184,7 +214,7 @@ class FXMacroDataMacroReaderTest(unittest.TestCase):
         self.assertEqual(url, "https://example.com/api/v1/announcements/usd/inflation")
         self.assertEqual(
             params,
-            {"start_date": "2026-01-01", "end_date": "2026-06-30", "limit": 5},
+            {"start_date": "2026-01-01", "end_date": "2026-06-30", "limit": 5, "offset": 0},
         )
         self.assertEqual(headers, {"X-API-Key": API_KEY})
         self.assertEqual(timeout, 30)
