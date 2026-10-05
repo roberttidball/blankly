@@ -40,7 +40,7 @@ class FXMacroDataClient:
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 30,
     ):
-        self.api_key = api_key or get_env_api_key()
+        self.api_key = clean_api_key(api_key or get_env_api_key())
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
@@ -53,9 +53,18 @@ class FXMacroDataClient:
             params=clean_params(params or {}),
             headers=headers,
             timeout=self.timeout,
+            # Redirects are not followed, so the key never leaves this host.
+            allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            raise requests.HTTPError(
+                f"FXMacroData returned an unexpected redirect ({response.status_code})"
+            )
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
+        if isinstance(payload, dict) and "detail" in payload and "data" not in payload:
+            raise ValueError(f"FXMacroData request failed: {payload['detail']}")
+        return payload
 
     def get_rows(self, path: str, params: Optional[dict] = None, max_rows: Optional[int] = None) -> list:
         """
@@ -73,7 +82,7 @@ class FXMacroDataClient:
             page = payload_rows(payload)
             rows.extend(page)
             pagination = payload.get("pagination") if isinstance(payload, dict) else None
-            if not page or not pagination or not pagination.get("has_more"):
+            if not page or not isinstance(pagination, dict) or not pagination.get("has_more"):
                 break
             if max_rows is not None and len(rows) >= max_rows:
                 break
@@ -299,12 +308,10 @@ def date_params(start_date=None, end_date=None, **extra) -> dict:
 
 
 def payload_rows(payload) -> list:
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        rows = payload.get("data", [])
-        return rows if isinstance(rows, list) else []
-    return []
+    rows = payload.get("data", []) if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def row_time(row: dict, time_field: str = "announcement_datetime") -> Optional[int]:
@@ -315,6 +322,13 @@ def row_time(row: dict, time_field: str = "announcement_datetime") -> Optional[i
     if date is None:
         return None
     return to_epoch(date)
+
+
+def clean_api_key(api_key: Optional[str]) -> Optional[str]:
+    api_key = (api_key or "").strip()
+    if any(char.isspace() or not char.isprintable() for char in api_key):
+        raise ValueError("FXMacroData API key contains invalid characters")
+    return api_key or None
 
 
 def get_env_api_key() -> Optional[str]:

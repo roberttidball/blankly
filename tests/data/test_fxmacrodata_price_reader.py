@@ -73,8 +73,9 @@ def load_fxmacrodata_module():
 
 
 class FXMacroDataResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self.payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
         return None
@@ -91,7 +92,7 @@ class FXMacroDataPriceReaderTest(unittest.TestCase):
     def test_fetches_daily_fx_prices(self):
         requests = []
 
-        def mock_get(url, params, headers, timeout):
+        def mock_get(url, params, headers, timeout, allow_redirects=True):
             requests.append((url, params, headers, timeout))
             return FXMacroDataResponse(
                 {
@@ -142,7 +143,7 @@ class FXMacroDataPriceReaderTest(unittest.TestCase):
             },
         }
 
-        def mock_get(url, params, headers, timeout):
+        def mock_get(url, params, headers, timeout, allow_redirects=True):
             requests.append(dict(params))
             return FXMacroDataResponse(pages[params["offset"]])
 
@@ -154,6 +155,41 @@ class FXMacroDataPriceReaderTest(unittest.TestCase):
         self.assertEqual([params["offset"] for params in requests], [0, 2])
         self.assertTrue(all(params["limit"] == 100 for params in requests))
         self.assertEqual(reader.data["EUR-USD"]["close"].tolist(), [1.101, 1.102, 1.103])
+
+    def test_does_not_follow_redirects(self):
+        calls = []
+
+        def mock_get(url, params, headers, timeout, allow_redirects=True):
+            calls.append(allow_redirects)
+            return FXMacroDataResponse({}, status_code=302)
+
+        with patch.object(self.fxmacrodata.requests, "get", side_effect=mock_get):
+            with self.assertRaises(self.fxmacrodata.requests.HTTPError):
+                self.price_reader_class("EURUSD", "2024-01-02", "2024-01-04", api_key=API_KEY)
+
+        self.assertEqual(calls, [False])
+
+    def test_invalid_api_key_is_not_echoed(self):
+        with self.assertRaises(ValueError) as context:
+            self.fxmacrodata.FXMacroDataClient(api_key="secret-key\r\nX-Other: 1")
+
+        self.assertNotIn("secret-key", str(context.exception))
+        self.assertEqual(self.fxmacrodata.FXMacroDataClient(api_key=" key \n").api_key, "key")
+
+    def test_error_body_and_malformed_rows_raise_clean_errors(self):
+        def error_body(url, params, headers, timeout, allow_redirects=True):
+            return FXMacroDataResponse({"detail": "Invalid API key"})
+
+        with patch.object(self.fxmacrodata.requests, "get", side_effect=error_body):
+            with self.assertRaisesRegex(ValueError, "Invalid API key"):
+                self.price_reader_class("EURUSD", "2024-01-02", "2024-01-04", api_key=API_KEY)
+
+        def malformed(url, params, headers, timeout, allow_redirects=True):
+            return FXMacroDataResponse({"data": ["oops", 1], "pagination": ["oops"]})
+
+        with patch.object(self.fxmacrodata.requests, "get", side_effect=malformed):
+            with self.assertRaisesRegex(ValueError, "no prices"):
+                self.price_reader_class("EURUSD", "2024-01-02", "2024-01-04", api_key=API_KEY)
 
     def test_symbol_formats(self):
         self.assertEqual(self.price_reader_class.normalize_symbol("EURUSD"), "EUR-USD")
@@ -184,7 +220,7 @@ class FXMacroDataMacroReaderTest(unittest.TestCase):
     def test_announcement_reader_fetches_macro_events(self):
         requests = []
 
-        def mock_get(url, params, headers, timeout):
+        def mock_get(url, params, headers, timeout, allow_redirects=True):
             requests.append((url, params, headers, timeout))
             return FXMacroDataResponse(
                 {
@@ -223,7 +259,7 @@ class FXMacroDataMacroReaderTest(unittest.TestCase):
         self.assertEqual(event_data["data"].iloc[0]["val"], 4.2)
 
     def test_calendar_reader_preserves_events_with_same_timestamp(self):
-        def mock_get(url, params, headers, timeout):
+        def mock_get(url, params, headers, timeout, allow_redirects=True):
             return FXMacroDataResponse(
                 {
                     "data": [
@@ -256,7 +292,7 @@ class FXMacroDataMacroReaderTest(unittest.TestCase):
         )
 
     def test_prediction_reader_fetches_forecast_groups(self):
-        def mock_get(url, params, headers, timeout):
+        def mock_get(url, params, headers, timeout, allow_redirects=True):
             return FXMacroDataResponse(
                 {
                     "data": [
